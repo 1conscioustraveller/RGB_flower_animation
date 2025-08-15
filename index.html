@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Geometrical Capture Demo</title>
+  <link rel="stylesheet" href="styles.css"/>
+  <!-- WebM-writer-js for reliable client-side webm encoding -->
+  <script src="https://cdn.jsdelivr.net/npm/webm-writer@0.3.0/dist/webm-writer.min.js"></script>
+</head>
+<body>
+  <div id="wrapper">
+    <canvas id="canvas" width="640" height="640"></canvas>
+
+    <div id="controls">
+      <label>
+        Size
+        <input type="range" id="sizeRange" min="40" max="200" value="120"/>
+      </label>
+
+      <label>
+        Speed
+        <input type="range" id="speedRange" min="0.1" max="3" step="0.1" value="1"/>
+      </label>
+
+      <label>
+        Hue
+        <input type="range" id="hueRange" min="0" max="360" value="0"/>
+      </label>
+
+      <label>
+        Glow
+        <input type="range" id="glowRange" min="0" max="50" value="20"/>
+      </label>
+
+      <button id="downloadBtn">Download 7-s WEBM</button>
+    </div>
+  </div>
+
+<script>
+/* ---------- adjustable parameters ---------- */
+let cfg = {
+  size: 120,
+  speed: 1,
+  hueOffset: 0,
+  glow: 20
+};
+
+/* ---------- canvas & WebGL boilerplate ---------- */
+const canvas = document.getElementById('canvas');
+const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+if (!gl) alert('WebGL not supported');
+
+/* compile shader util */
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    throw gl.getShaderInfoLog(s);
+  return s;
+}
+
+/* shader sources */
+const vs = `
+attribute vec4 aPos;
+uniform mat4 uMVP;
+void main() {
+  gl_Position = uMVP * aPos;
+}
+`;
+const fs = `
+precision mediump float;
+uniform float uHue;
+uniform float uGlow;
+uniform float uTime;
+void main() {
+  vec3 rgb = 0.5 + 0.5*cos(uHue/360.0*6.28318 + vec3(0,2,4) + uTime);
+  gl_FragColor = vec4(rgb, 1.0);
+}
+`;
+
+/* program */
+const prog = gl.createProgram();
+gl.attachShader(prog, compileShader(gl.VERTEX_SHADER,   vs));
+gl.attachShader(prog, compileShader(gl.FRAGMENT_SHADER, fs));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+/* cube geometry */
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+  // 8 vertices
+  -1,-1,-1,  1,-1,-1,  1, 1,-1, -1, 1,-1,
+  -1,-1, 1,  1,-1, 1,  1, 1, 1, -1, 1, 1
+]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'aPos');
+gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+gl.enableVertexAttribArray(aPos);
+
+/* indices (12 edges → 24 indices) */
+const ibo = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint8Array([
+  0,1, 1,2, 2,3, 3,0,
+  4,5, 5,6, 6,7, 7,4,
+  0,4, 1,5, 2,6, 3,7
+]), gl.STATIC_DRAW);
+
+/* uniforms */
+const uMVP   = gl.getUniformLocation(prog, 'uMVP');
+const uHue   = gl.getUniformLocation(prog, 'uHue');
+const uGlow  = gl.getUniformLocation(prog, 'uGlow');
+const uTime  = gl.getUniformLocation(prog, 'uTime');
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+gl.lineWidth(3);
+
+/* ---------- animation loop ---------- */
+let then = 0;
+function frame(now) {
+  now *= 0.001; // seconds
+  const dt = now - then;
+  then = now;
+
+  /* uniforms */
+  gl.uniform1f(uHue,  cfg.hueOffset);
+  gl.uniform1f(uGlow, cfg.glow);
+  gl.uniform1f(uTime, now * cfg.speed);
+
+  /* model-view-projection matrix (simple rotate) */
+  const a = now * cfg.speed;
+  const c = Math.cos(a), s = Math.sin(a);
+  const size = cfg.size / 100;
+  const mvp = new Float32Array([
+    c*size,  s*size, 0,0,
+   -s*size,  c*size, 0,0,
+    0,0,size,0,
+    0,0,0,1
+  ]);
+  gl.uniformMatrix4fv(uMVP, false, mvp);
+
+  /* draw */
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawElements(gl.LINES, 24, gl.UNSIGNED_BYTE, 0);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* ---------- UI controls ---------- */
+document.getElementById('sizeRange').addEventListener('input', e => cfg.size = +e.target.value);
+document.getElementById('speedRange').addEventListener('input', e => cfg.speed = +e.target.value);
+document.getElementById('hueRange').addEventListener('input', e => cfg.hueOffset = +e.target.value);
+document.getElementById('glowRange').addEventListener('input', e => cfg.glow = +e.target.value);
+
+/* ---------- download button ---------- */
+const downloadBtn = document.getElementById('downloadBtn');
+let recording = false;
+
+downloadBtn.addEventListener('click', async () => {
+  if (recording) return;
+  recording = true;
+  downloadBtn.textContent = 'Recording…';
+
+  /* canvas stream */
+  const stream = canvas.captureStream(60); // 60 fps
+  const writer = new WebMWriter({
+    quality: 0.95,
+    frameRate: 60
+  });
+
+  const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+  const chunks = [];
+  recorder.ondataavailable = e => chunks.push(e.data);
+  recorder.onstop = () => {
+    const blob = new Blob(chunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'geometry_7s.webm';
+    a.click();
+    URL.revokeObjectURL(url);
+    recording = false;
+    downloadBtn.textContent = 'Download 7-s WEBM';
+  };
+
+  recorder.start();
+  /* stop after exactly 7 s */
+  setTimeout(() => recorder.stop(), 7000);
+});
+</script>
+</body>
+</html>
